@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Web Chess vs Computer</title>
+  <!-- Chessboard.js CSS -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/deanius/chessboardjs/www/css/chessboard.css">
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; margin-top: 20px; }
+    #board { width: 400px; margin: 20px auto; }
+    #status { margin-top: 10px; }
+    button { margin-top: 10px; padding: 8px 16px; }
+  </style>
+</head>
+<body>
+  <h1>Web Chess vs Computer</h1>
+  <div id="board"></div>
+  <div id="status"></div>
+  <button id="newgame">New Game</button>
+
+  <!-- Dependencies -->
+  <!-- jQuery (required by Chessboard.js) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+  <!-- Chessboard.js UI -->
+  <script>
+    // shim CommonJS export for browser
+    window.module = { exports: {} };
+    window.exports = module.exports;
+  </script>
+  <script src="https://cdn.jsdelivr.net/gh/deanius/chessboardjs/www/js/chessboard.js"></script>
+  <!-- Chess.js game logic -->
+  <!-- Integrity attributes removed to avoid SRI mismatch blocking -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js"></script>
+
+  <script>
+    var board = null;
+    var game = new Chess();
+    var statusEl = document.getElementById('status');
+    // difficulty level: 0 = random, 1..N = engine search depth
+    var level = 3;  // default depth
+    
+    // Initialize Stockfish engine via fetch+blob (CORS-friendly worker)
+    var engine;
+    var engineLoaded = false;
+    fetch('https://cdn.jsdelivr.net/npm/stockfish.js@10.0.2/stockfish.wasm.js')
+      .then(function(r) { return r.text(); })
+      .then(function(src) {
+        var blob = new Blob([src], { type: 'application/javascript' });
+        var url = URL.createObjectURL(blob);
+        engine = new Worker(url);
+        engine.onmessage = function(e) {
+          var line = e.data;
+          if (typeof line !== 'string') return;
+          if (line === 'readyok') {
+            engineLoaded = true;
+          } else if (line.indexOf('bestmove ') === 0) {
+            var move = line.split(' ')[1];
+            var from = move.slice(0,2);
+            var to = move.slice(2,4);
+            var promotion = move.length > 4 ? move[4] : 'q';
+            game.move({ from: from, to: to, promotion: promotion });
+            board.position(game.fen());
+            updateStatus();
+          }
+        };
+        engine.postMessage('uci');
+        engine.postMessage('isready');
+      })
+      .catch(function(err) {
+        console.error('Failed to load Stockfish engine:', err);
+      });
+    function onDragStart(source, piece, position, orientation) {
+      // only allow dragging white pieces when it's white's turn
+      if (game.game_over() || game.turn() !== 'w' || piece.search(/^b/) !== -1) {
+        return false;
+      }
+    }
+
+    function onDrop(source, target) {
+      var move = game.move({ from: source, to: target, promotion: 'q' });
+      if (move === null) return 'snapback';
+      updateStatus();
+      // let engine play after short delay
+      window.setTimeout(function() { engineMove(); }, 200);
+    }
+
+    function onSnapEnd() {
+      board.position(game.fen());
+    }
+
+    // Engine move: random if level 0 or engine not ready; otherwise Stockfish search at selected depth
+    function engineMove() {
+      var moves = game.moves();
+      if (moves.length === 0) return;
+      if (level === 0 || !engineLoaded) {
+        // random move (level 0) or engine not ready
+        var move = moves[Math.floor(Math.random() * moves.length)];
+        game.move(move);
+        board.position(game.fen());
+        updateStatus();
+      } else {
+        // ask engine at selected depth
+        engine.postMessage('position fen ' + game.fen());
+        engine.postMessage('go depth ' + level);
+      }
+    }
+
+    function updateStatus() {
+      var status = '';
+      var turn = (game.turn() === 'w') ? 'White' : 'Black';
+      if (game.in_checkmate()) {
+        status = 'Game over, ' + turn + ' is in checkmate.';
+      } else if (game.in_draw()) {
+        status = 'Game over, drawn position.';
+      } else {
+        status = turn + ' to move';
+        if (game.in_check()) status += ', ' + turn + ' is in check';
+      }
+      statusEl.innerHTML = status;
+    }
+
+    function initGame() {
+      // ask user for difficulty at game start
+      var raw = prompt('Valitse vaikeustaso: 0 (satunnainen) - 8 (korkein):', level);
+      var num = parseInt(raw, 10);
+      if (isNaN(num) || num < 0) num = 0;
+      if (num > 8) num = 8;
+      level = num;
+      // reset game and board
+      game.reset();
+      board = ChessBoard('board', {
+        draggable: true,
+        position: 'start',
+        // use Wikipedia icons for pieces
+        pieceTheme: 'https://cdn.jsdelivr.net/gh/deanius/chessboardjs/www/img/chesspieces/wikipedia/{piece}.png',
+        onDragStart: onDragStart,
+        onDrop: onDrop,
+        onSnapEnd: onSnapEnd
+      });
+      updateStatus();
+    }
+
+    document.getElementById('newgame').addEventListener('click', initGame);
+    initGame();
+  </script>
+</body>
+</html>
