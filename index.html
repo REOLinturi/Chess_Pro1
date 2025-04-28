@@ -3,146 +3,191 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Web Chess vs Computer</title>
-  <!-- Chessboard.js CSS -->
+  <title>Web Chess vs Computer (Embedded Mini‑Engine Fallback)</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/deanius/chessboardjs/www/css/chessboard.css">
   <style>
     body { font-family: Arial, sans-serif; text-align: center; margin-top: 20px; }
-    #board { width: 400px; margin: 20px auto; }
-    #status { margin-top: 10px; }
-    button { margin-top: 10px; padding: 8px 16px; }
+    #board   { width: 400px; margin: 20px auto; }
+    #status  { margin-top: 10px; }
+    #think   { width: 400px; height: 10px; margin: 6px auto; display: none; }
+    #controls{ margin-top:10px; }
+    select,button{ margin-left:6px; padding:6px 10px; }
+    #error   { color:red; margin-top:6px; }
   </style>
 </head>
 <body>
   <h1>Web Chess vs Computer</h1>
-  <div id="board"></div>
-  <div id="status"></div>
-  <button id="newgame">New Game</button>
 
-  <!-- Dependencies -->
-  <!-- jQuery (required by Chessboard.js) -->
+  <div id="controls">
+    <label for="level">Difficulty:</label>
+    <select id="level">
+      <option value="0">0 — Random</option>
+    </select>
+    <button id="newgame">Start / New Game</button>
+  </div>
+
+  <div id="board"></div>
+  <progress id="think"></progress>
+  <div id="status"></div>
+  <div id="error"></div>
+
+  <!-- Libraries (all local CDN‑safe) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
-  <!-- Chessboard.js UI -->
-  <script>
-    // shim CommonJS export for browser
-    window.module = { exports: {} };
-    window.exports = module.exports;
-  </script>
+  <script>window.module={exports:{}};window.exports=module.exports;</script>
   <script src="https://cdn.jsdelivr.net/gh/deanius/chessboardjs/www/js/chessboard.js"></script>
-  <!-- Chess.js game logic -->
-  <!-- Integrity attributes removed to avoid SRI mismatch blocking -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js"></script>
 
   <script>
-    var board = null;
-    var game = new Chess();
-    var statusEl = document.getElementById('status');
-    // difficulty level: 0 = random, 1..N = engine search depth
-    var level = 3;  // default depth
-    
-    // Initialize Stockfish engine via fetch+blob (CORS-friendly worker)
-    var engine;
-    var engineLoaded = false;
-    fetch('https://cdn.jsdelivr.net/npm/stockfish.js@10.0.2/stockfish.wasm.js')
-      .then(function(r) { return r.text(); })
-      .then(function(src) {
-        var blob = new Blob([src], { type: 'application/javascript' });
-        var url = URL.createObjectURL(blob);
-        engine = new Worker(url);
-        engine.onmessage = function(e) {
-          var line = e.data;
-          if (typeof line !== 'string') return;
-          if (line === 'readyok') {
-            engineLoaded = true;
-          } else if (line.indexOf('bestmove ') === 0) {
-            var move = line.split(' ')[1];
-            var from = move.slice(0,2);
-            var to = move.slice(2,4);
-            var promotion = move.length > 4 ? move[4] : 'q';
-            game.move({ from: from, to: to, promotion: promotion });
-            board.position(game.fen());
-            updateStatus();
-          }
-        };
-        engine.postMessage('uci');
-        engine.postMessage('isready');
-      })
-      .catch(function(err) {
-        console.error('Failed to load Stockfish engine:', err);
-      });
-    function onDragStart(source, piece, position, orientation) {
-      // only allow dragging white pieces when it's white's turn
-      if (game.game_over() || game.turn() !== 'w' || piece.search(/^b/) !== -1) {
-        return false;
+    /**************** UI init ****************/ 
+    const game = new Chess();
+    let board;
+    const levelSel = document.getElementById('level');
+    const statusEl = document.getElementById('status');
+    const thinkBar = document.getElementById('think');
+
+    for (let i = 1; i <= 20; i++) levelSel.add(new Option(i, i, i===10, i===10));
+    let level = +levelSel.value;
+
+    initBoard();
+
+    /**************** Embedded mini‑engine ****************/
+    const values = { p:100, n:320, b:330, r:500, q:900, k:0 };
+
+    function evaluate(boardFen){
+      let score = 0;
+      const fen = boardFen.split(' ')[0];
+      for (const ch of fen) {
+        if (ch === '/' || Number.isInteger(+ch)) continue;
+        const val = values[ch.toLowerCase()] || 0;
+        score += ch === ch.toUpperCase() ? val : -val;
+      }
+      return score;
+    }
+
+    function minimax(game, depth, alpha, beta, isMax){
+      if (depth === 0 || game.game_over()) return evaluate(game.fen());
+      const moves = game.moves();
+      if (isMax){
+        let maxEval = -Infinity;
+        for (const mv of moves){
+          game.move(mv);
+          const evalVal = minimax(game, depth-1, alpha, beta, false);
+          game.undo();
+          maxEval = Math.max(maxEval, evalVal);
+          alpha = Math.max(alpha, evalVal);
+          if (beta <= alpha) break;
+        }
+        return maxEval;
+      } else {
+        let minEval = Infinity;
+        for (const mv of moves){
+          game.move(mv);
+          const evalVal = minimax(game, depth-1, alpha, beta, true);
+          game.undo();
+          minEval = Math.min(minEval, evalVal);
+          beta = Math.min(beta, evalVal);
+          if (beta <= alpha) break;
+        }
+        return minEval;
       }
     }
 
-    function onDrop(source, target) {
-      var move = game.move({ from: source, to: target, promotion: 'q' });
-      if (move === null) return 'snapback';
+    function bestMoveFor(game, depth){
+      const moves = game.moves();
+      let best = moves[0];
+      let bestVal = -Infinity;
+      for (const mv of moves){
+        game.move(mv);
+        const val = minimax(game, depth-1, -Infinity, Infinity, false);
+        game.undo();
+        if (val > bestVal){ bestVal = val; best = mv; }
+      }
+      return best;
+    }
+
+    function levelToDepth(lvl){
+      if (lvl === 1) return 1;
+      if (lvl <= 4)  return 2;
+      if (lvl <= 8)  return 3;
+      if (lvl <= 12) return 4;
+      if (lvl <= 16) return 5;
+      return 6;
+    }
+
+    /**************** Game helpers ****************/
+    function onDragStart(src, piece){
+      if (game.game_over() || game.turn() !== 'w' || piece.startsWith('b')) return false;
+    }
+
+    function onDrop(src, tgt){
+      const mv = game.move({ from: src, to: tgt, promotion: 'q' });
+      if (!mv) return 'snapback';
       updateStatus();
-      // let engine play after short delay
-      window.setTimeout(function() { engineMove(); }, 200);
+      engineMove();
     }
+    function onSnapEnd(){ board.position(game.fen()); }
 
-    function onSnapEnd() {
-      board.position(game.fen());
-    }
-
-    // Engine move: random if level 0 or engine not ready; otherwise Stockfish search at selected depth
-    function engineMove() {
-      var moves = game.moves();
-      if (moves.length === 0) return;
-      if (level === 0 || !engineLoaded) {
-        // random move (level 0) or engine not ready
-        var move = moves[Math.floor(Math.random() * moves.length)];
-        game.move(move);
+    function engineMove(){
+      if (game.game_over()) return;
+      if (level === 0){ randomMove(); return; }
+      const depth = levelToDepth(level);
+      startThinking(depth * 600); // rough feedback
+      setTimeout(()=>{
+        const mv = bestMoveFor(game, depth);
+        game.move(mv);
         board.position(game.fen());
+        stopThinking();
         updateStatus();
-      } else {
-        // ask engine at selected depth
-        engine.postMessage('position fen ' + game.fen());
-        engine.postMessage('go depth ' + level);
-      }
+      }, 20);
     }
 
-    function updateStatus() {
-      var status = '';
-      var turn = (game.turn() === 'w') ? 'White' : 'Black';
-      if (game.in_checkmate()) {
-        status = 'Game over, ' + turn + ' is in checkmate.';
-      } else if (game.in_draw()) {
-        status = 'Game over, drawn position.';
-      } else {
-        status = turn + ' to move';
-        if (game.in_check()) status += ', ' + turn + ' is in check';
-      }
-      statusEl.innerHTML = status;
+    function randomMove(){
+      const moves = game.moves();
+      if (!moves.length) return;
+      game.move(moves[Math.floor(Math.random()*moves.length)]);
+      board.position(game.fen());
+      updateStatus();
     }
 
-    function initGame() {
-      // ask user for difficulty at game start
-      var raw = prompt('Valitse vaikeustaso: 0 (satunnainen) - 8 (korkein):', level);
-      var num = parseInt(raw, 10);
-      if (isNaN(num) || num < 0) num = 0;
-      if (num > 8) num = 8;
-      level = num;
-      // reset game and board
-      game.reset();
+    function updateStatus(){
+      let txt; const turn = game.turn()==='w' ? 'White' : 'Black';
+      if (game.in_checkmate()) txt = `Game over – ${turn} is checkmated.`;
+      else if (game.in_draw())  txt = 'Game over – draw.';
+      else { txt = `${turn} to move`; if (game.in_check()) txt += ', in check'; }
+      txt += ` | Level: ${level}`;
+      statusEl.textContent = txt;
+    }
+
+    // Progress‑bar control
+    let timerId = null;
+    function startThinking(ms){
+      thinkBar.style.display = 'block';
+      thinkBar.removeAttribute('value'); // indeterminate animation
+      timerId = setTimeout(stopThinking, ms);
+    }
+    function stopThinking(){
+      if (timerId) clearTimeout(timerId);
+      timerId = null;
+      thinkBar.style.display = 'none';
+      thinkBar.value = 0;
+    }
+
+    function initBoard(){
+      if (board && board.destroy) board.destroy();
       board = ChessBoard('board', {
-        draggable: true,
-        position: 'start',
-        // use Wikipedia icons for pieces
-        pieceTheme: 'https://cdn.jsdelivr.net/gh/deanius/chessboardjs/www/img/chesspieces/wikipedia/{piece}.png',
-        onDragStart: onDragStart,
-        onDrop: onDrop,
-        onSnapEnd: onSnapEnd
+        draggable:true,
+        position:'start',
+        pieceTheme:'https://cdn.jsdelivr.net/gh/deanius/chessboardjs/www/img/chesspieces/wikipedia/{piece}.png',
+        onDragStart, onDrop, onSnapEnd
       });
       updateStatus();
     }
 
-    document.getElementById('newgame').addEventListener('click', initGame);
-    initGame();
+    document.getElementById('newgame').addEventListener('click',()=>{
+      level = +levelSel.value;
+      game.reset();
+      initBoard();
+    });
   </script>
 </body>
 </html>
