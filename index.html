@@ -3,191 +3,68 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Web Chess vs Computer (Embedded Mini‑Engine Fallback)</title>
+  <title>Web Chess vs Computer – Async Mini‑AI</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/deanius/chessboardjs/www/css/chessboard.css">
   <style>
-    body { font-family: Arial, sans-serif; text-align: center; margin-top: 20px; }
-    #board   { width: 400px; margin: 20px auto; }
-    #status  { margin-top: 10px; }
-    #think   { width: 400px; height: 10px; margin: 6px auto; display: none; }
-    #controls{ margin-top:10px; }
-    select,button{ margin-left:6px; padding:6px 10px; }
-    #error   { color:red; margin-top:6px; }
+    body{font-family:Arial, sans-serif;text-align:center;margin-top:20px}
+    #board{width:400px;margin:20px auto}
+    #controls{margin-top:10px}
+    #status{margin-top:10px}
+    #think{width:400px;height:10px;margin:6px auto;display:none}
+    select,button{margin-left:6px;padding:6px 10px}
+    #error{color:red;margin-top:6px}
   </style>
 </head>
 <body>
-  <h1>Web Chess vs Computer</h1>
+<h1>Web Chess vs Computer</h1>
+<div id="controls">
+  <label for="level">Difficulty:</label>
+  <select id="level"><option value="0">0 — Random</option></select>
+  <button id="newgame">Start / New Game</button>
+</div>
+<div id="board"></div>
+<progress id="think"></progress>
+<div id="status"></div>
 
-  <div id="controls">
-    <label for="level">Difficulty:</label>
-    <select id="level">
-      <option value="0">0 — Random</option>
-    </select>
-    <button id="newgame">Start / New Game</button>
-  </div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+<script>window.module={exports:{}};window.exports=module.exports;</script>
+<script src="https://cdn.jsdelivr.net/gh/deanius/chessboardjs/www/js/chessboard.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js"></script>
+<script>
+/************ 1 – UI init ************/
+const game=new Chess();
+let board;
+const levelSel=document.getElementById('level');
+const statusEl=document.getElementById('status');
+const thinkBar=document.getElementById('think');
+for(let i=1;i<=20;i++)levelSel.add(new Option(i,i,i===10,i===10));
+let level=+levelSel.value;
+initBoard();
 
-  <div id="board"></div>
-  <progress id="think"></progress>
-  <div id="status"></div>
-  <div id="error"></div>
+/************ 2 – Mini AI (async) ************/
+const VALUES={p:100,n:320,b:330,r:500,q:900,k:0};
+function evaluateFen(fen){let s=0;for(const ch of fen.split(' ')[0]){if(ch==='/'||!isNaN(ch))continue;const v=VALUES[ch.toLowerCase()]||0;s+=ch===ch.toUpperCase()?v:-v;}return s;}
+function minimax(g,d,a,b,maxPlayer){if(d===0||g.game_over())return evaluateFen(g.fen());const moves=g.moves();if(maxPlayer){let v=-1e9;for(const m of moves){g.move(m);v=Math.max(v,minimax(g,d-1,a,b,false));g.undo();a=Math.max(a,v);if(b<=a)break;}return v;}else{let v=1e9;for(const m of moves){g.move(m);v=Math.min(v,minimax(g,d-1,a,b,true));g.undo();b=Math.min(b,v);if(b<=a)break;}return v;}}
+function levelToDepth(lvl){return lvl===0?0:lvl<=4?2:lvl<=8?3:lvl<=12?4:lvl<=16?5:6;}
+function bestMoveAsync(depth,cb){const moves=game.moves();let i=0,best=moves[0],bestVal=-1e9;function step(){if(i>=moves.length){cb(best);return;}const mv=moves[i++];game.move(mv);const v=minimax(game,depth-1,-1e9,1e9,false);game.undo();if(v>bestVal){bestVal=v;best=mv;}setTimeout(step,0);}step();}
 
-  <!-- Libraries (all local CDN‑safe) -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
-  <script>window.module={exports:{}};window.exports=module.exports;</script>
-  <script src="https://cdn.jsdelivr.net/gh/deanius/chessboardjs/www/js/chessboard.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js"></script>
+/************ 3 – Helpers ************/
+function onDragStart(src,p){if(game.game_over()||game.turn()!=='w'||p.startsWith('b'))return false;}
+function onDrop(src,tgt){const mv=game.move({from:src,to:tgt,promotion:'q'});if(!mv)return'snapback';updateStatus();engineMove();}
+function onSnapEnd(){board.position(game.fen());}
 
-  <script>
-    /**************** UI init ****************/ 
-    const game = new Chess();
-    let board;
-    const levelSel = document.getElementById('level');
-    const statusEl = document.getElementById('status');
-    const thinkBar = document.getElementById('think');
+function engineMove(){if(game.game_over())return;if(level===0){randomMove();return;}const depth=levelToDepth(level);startThinking();bestMoveAsync(depth,move=>{game.move(move);board.position(game.fen());stopThinking();updateStatus();});}
+function randomMove(){const mvs=game.moves();if(!mvs.length)return;game.move(mvs[Math.floor(Math.random()*mvs.length)]);board.position(game.fen());updateStatus();}
 
-    for (let i = 1; i <= 20; i++) levelSel.add(new Option(i, i, i===10, i===10));
-    let level = +levelSel.value;
+function updateStatus(){let txt;const turn=game.turn()==='w'?'White':'Black';if(game.in_checkmate())txt=`Game over – ${turn} is checkmated.`;else if(game.in_draw())txt='Game over – draw.';else{txt=`${turn} to move`;if(game.in_check())txt+=', in check';}txt+=` | Level: ${level}`;statusEl.textContent=txt;}
 
-    initBoard();
+// progress bar – indeterminate style
+function startThinking(){thinkBar.style.display='block';thinkBar.removeAttribute('value');}
+function stopThinking(){thinkBar.style.display='none';thinkBar.value=0;}
 
-    /**************** Embedded mini‑engine ****************/
-    const values = { p:100, n:320, b:330, r:500, q:900, k:0 };
+function initBoard(){if(board&&board.destroy)board.destroy();board=ChessBoard('board',{draggable:true,position:'start',pieceTheme:'https://cdn.jsdelivr.net/gh/deanius/chessboardjs/www/img/chesspieces/wikipedia/{piece}.png',onDragStart,onDrop,onSnapEnd});updateStatus();}
 
-    function evaluate(boardFen){
-      let score = 0;
-      const fen = boardFen.split(' ')[0];
-      for (const ch of fen) {
-        if (ch === '/' || Number.isInteger(+ch)) continue;
-        const val = values[ch.toLowerCase()] || 0;
-        score += ch === ch.toUpperCase() ? val : -val;
-      }
-      return score;
-    }
-
-    function minimax(game, depth, alpha, beta, isMax){
-      if (depth === 0 || game.game_over()) return evaluate(game.fen());
-      const moves = game.moves();
-      if (isMax){
-        let maxEval = -Infinity;
-        for (const mv of moves){
-          game.move(mv);
-          const evalVal = minimax(game, depth-1, alpha, beta, false);
-          game.undo();
-          maxEval = Math.max(maxEval, evalVal);
-          alpha = Math.max(alpha, evalVal);
-          if (beta <= alpha) break;
-        }
-        return maxEval;
-      } else {
-        let minEval = Infinity;
-        for (const mv of moves){
-          game.move(mv);
-          const evalVal = minimax(game, depth-1, alpha, beta, true);
-          game.undo();
-          minEval = Math.min(minEval, evalVal);
-          beta = Math.min(beta, evalVal);
-          if (beta <= alpha) break;
-        }
-        return minEval;
-      }
-    }
-
-    function bestMoveFor(game, depth){
-      const moves = game.moves();
-      let best = moves[0];
-      let bestVal = -Infinity;
-      for (const mv of moves){
-        game.move(mv);
-        const val = minimax(game, depth-1, -Infinity, Infinity, false);
-        game.undo();
-        if (val > bestVal){ bestVal = val; best = mv; }
-      }
-      return best;
-    }
-
-    function levelToDepth(lvl){
-      if (lvl === 1) return 1;
-      if (lvl <= 4)  return 2;
-      if (lvl <= 8)  return 3;
-      if (lvl <= 12) return 4;
-      if (lvl <= 16) return 5;
-      return 6;
-    }
-
-    /**************** Game helpers ****************/
-    function onDragStart(src, piece){
-      if (game.game_over() || game.turn() !== 'w' || piece.startsWith('b')) return false;
-    }
-
-    function onDrop(src, tgt){
-      const mv = game.move({ from: src, to: tgt, promotion: 'q' });
-      if (!mv) return 'snapback';
-      updateStatus();
-      engineMove();
-    }
-    function onSnapEnd(){ board.position(game.fen()); }
-
-    function engineMove(){
-      if (game.game_over()) return;
-      if (level === 0){ randomMove(); return; }
-      const depth = levelToDepth(level);
-      startThinking(depth * 600); // rough feedback
-      setTimeout(()=>{
-        const mv = bestMoveFor(game, depth);
-        game.move(mv);
-        board.position(game.fen());
-        stopThinking();
-        updateStatus();
-      }, 20);
-    }
-
-    function randomMove(){
-      const moves = game.moves();
-      if (!moves.length) return;
-      game.move(moves[Math.floor(Math.random()*moves.length)]);
-      board.position(game.fen());
-      updateStatus();
-    }
-
-    function updateStatus(){
-      let txt; const turn = game.turn()==='w' ? 'White' : 'Black';
-      if (game.in_checkmate()) txt = `Game over – ${turn} is checkmated.`;
-      else if (game.in_draw())  txt = 'Game over – draw.';
-      else { txt = `${turn} to move`; if (game.in_check()) txt += ', in check'; }
-      txt += ` | Level: ${level}`;
-      statusEl.textContent = txt;
-    }
-
-    // Progress‑bar control
-    let timerId = null;
-    function startThinking(ms){
-      thinkBar.style.display = 'block';
-      thinkBar.removeAttribute('value'); // indeterminate animation
-      timerId = setTimeout(stopThinking, ms);
-    }
-    function stopThinking(){
-      if (timerId) clearTimeout(timerId);
-      timerId = null;
-      thinkBar.style.display = 'none';
-      thinkBar.value = 0;
-    }
-
-    function initBoard(){
-      if (board && board.destroy) board.destroy();
-      board = ChessBoard('board', {
-        draggable:true,
-        position:'start',
-        pieceTheme:'https://cdn.jsdelivr.net/gh/deanius/chessboardjs/www/img/chesspieces/wikipedia/{piece}.png',
-        onDragStart, onDrop, onSnapEnd
-      });
-      updateStatus();
-    }
-
-    document.getElementById('newgame').addEventListener('click',()=>{
-      level = +levelSel.value;
-      game.reset();
-      initBoard();
-    });
-  </script>
+document.getElementById('newgame').addEventListener('click',()=>{level=+levelSel.value;game.reset();initBoard();});
+</script>
 </body>
 </html>
